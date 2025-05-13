@@ -1,4 +1,4 @@
-name: Build & Tag
+name: Build & Release latest
 
 permissions:
   contents: write
@@ -11,45 +11,36 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🧰 Set up Go
-        uses: actions/setup-go@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: "1.24"
-          check-latest: true
 
-      - name: 🔧 Build for Linux amd64
-        run: |
-          GOOS=linux GOARCH=amd64 go build -o collector ./main.go
+      - name: Build Linux binary
+        run: GOOS=linux GOARCH=amd64 go build -o collector ./main.go
 
-      - name: 📦 Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: collector-linux-amd64
-          path: collector
-
-      - name: 🏷️ Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Create or Update “latest” Release
+        id: release
+        uses: actions/create-release@v1
         with:
           tag_name: latest
-          name: Latest Build
-          files: collector
-          prerelease: true
+          release_name: latest
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🏷️ Update latest tag
-        if: github.ref == 'refs/heads/main'
+      - name: Upload collector binary to Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.release.outputs.upload_url }}
+          asset_path: ./collector
+          asset_name: collector-linux-amd64
+          asset_content_type: application/octet-stream
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f latest
-          git push -f origin latest
