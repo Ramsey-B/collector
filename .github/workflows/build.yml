@@ -21,15 +21,19 @@ jobs:
         with:
           go-version: "1.24"
 
-      - name: Build Linux binary
-        run: GOOS=linux GOARCH=amd64 go build -o collector ./main.go
+      - name: Build for amd64
+        run: GOOS=linux GOARCH=amd64 go build -o collector-amd64 ./main.go
 
-      - name: Create or Update "latest" Release
-        id: release
+      - name: Build for arm64
+        run: GOOS=linux GOARCH=arm64 go build -o collector-arm64 ./main.go
+
+      - name: Release (both)
         uses: softprops/action-gh-release@v1
         with:
+          files: |
+            collector-amd64
+            collector-arm64
           tag_name: latest
           name: latest
-          files: collector
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

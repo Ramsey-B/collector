@@ -4,9 +4,7 @@ packages:
   - sudo # ensure sudo is available
   - auditd # kernel audit support
 runcmd:
-  - curl -L \
-    -o /usr/local/bin/collector \
-    https://github.com/Ramsey-B/collector/releases/download/v1.0.0/collector-linux-amd64
+  - curl -L -o /usr/local/bin/collector https://github.com/Ramsey-B/collector/releases/download/latest/collector
 
   - chmod +x /usr/local/bin/collector
 
