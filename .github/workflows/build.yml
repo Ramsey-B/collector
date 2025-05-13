@@ -15,7 +15,7 @@ jobs:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # need full history so we can tag
+          fetch-depth: 0
 
       - name: 🧰 Set up Go
         uses: actions/setup-go@v4
@@ -33,7 +33,18 @@ jobs:
           name: collector-linux-amd64
           path: collector
 
-      - name: 🏷️ Create/Update `latest` git tag
+      - name: 🏷️ Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: Latest Build
+          files: collector
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Update latest tag
         if: github.ref == 'refs/heads/main'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
