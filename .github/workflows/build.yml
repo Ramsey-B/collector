@@ -25,7 +25,7 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -o collector ./main.go
 
       - name: 📦 Upload binary artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: collector-linux-amd64
           path: collector
