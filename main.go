@@ -11,16 +11,9 @@ import (
 	"time"
 )
 
-type Event struct {
-	// RawType is the value of the `type=` field (e.g. "SYSCALL" or "PATH")
-	RawType string            `json:"type"`
-	// Fields contains all the key→value pairs from the record
-	Fields  map[string]string `json:"fields"`
-}
-
 type Batch struct {
 	Timestamp time.Time `json:"timestamp"`
-	Events    []Event   `json:"events"`
+	Events    []string   `json:"events"`
 }
 
 func must(cmd *exec.Cmd) {
@@ -29,28 +22,9 @@ func must(cmd *exec.Cmd) {
 	}
 }
 
-// parseRecord turns a raw audit line like:
-//   type=SYSCALL msg=audit(…): … syscall=59 exe="/usr/bin/ls" pid=1234 …
-// into an Event{RawType:"SYSCALL", Fields: map[…]…}
-func parseRecord(line string) Event {
-	evt := Event{Fields: make(map[string]string)}
-	parts := strings.Fields(line)
-	for _, tok := range parts {
-		if kv := strings.SplitN(tok, "=", 2); len(kv) == 2 {
-			key, val := kv[0], kv[1]
-			// strip surrounding quotes if present
-			val = strings.Trim(val, `"`)
-			evt.Fields[key] = val
-			if key == "type" {
-				evt.RawType = val
-			}
-		}
-	}
-	return evt
-}
-
 func main() {
 	interval := flag.Duration("interval", 5*time.Second, "collection window")
+	key := flag.String("key", "collector", "audit key to tag rules with")
 	flag.Parse()
 
 	if os.Geteuid() != 0 {
@@ -58,9 +32,9 @@ func main() {
 	}
 
 	rules := [][]string{
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve"},
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat"},
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect"},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve", "-F", "key=" + *key},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat", "-F", "key=" + *key},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect", "-F", "key=" + *key},
 	}
 
 	for {
@@ -78,6 +52,7 @@ func main() {
 			"ausearch",
 			"--format", "raw",
 			"-m", "SYSCALL,PATH,SOCKADDR",
+			"-k", *key,
 			"--start", "recent",
 		).CombinedOutput()
 		if err != nil {
@@ -86,17 +61,9 @@ func main() {
 
 		// parse each non-empty line into an Event
 		lines := strings.Split(string(out), "\n")
-		var evts []Event
-		for _, ln := range lines {
-			ln = strings.TrimSpace(ln)
-			if ln == "" {
-				continue
-			}
-			evts = append(evts, parseRecord(ln))
-		}
 
 		// wrap into a batch and emit as JSON
-		batch := Batch{Timestamp: time.Now().UTC(), Events: evts}
+		batch := Batch{Timestamp: time.Now().UTC(), Events: lines}
 		enc, err := json.Marshal(batch)
 		if err != nil {
 			log.Fatalf("json.Marshal: %v", err)
