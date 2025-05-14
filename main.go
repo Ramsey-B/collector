@@ -104,19 +104,9 @@ func main() {
 
 	// install audit rules once
 	rules := [][]string{
-		// record process executions
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve", "-F", "key=" + *key},
-		// record file opens
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat", "-F", "key=" + *key},
-		// record IPv4 connect() calls
-		{
-			"-a", "exit,always",
-			"-F", "arch=b64",
-			"-S", "connect",
-			"-F", "family=2", // AF_INET only
-			"-F", "success=1", // only successful connects
-			"-F", "key=" + *key,
-		},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve", "-k", *key},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat", "-k", *key},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect", "-k", *key},
 	}
 	exec.Command("auditctl", "-D").Run()
 	for _, r := range rules {
