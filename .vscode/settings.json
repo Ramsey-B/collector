@@ -1,0 +1,31 @@
+{
+  "go.useLanguageServer": true,
+  "editor.formatOnSave": true,
+  "go.lintTool": "golangci-lint",
+  "go.lintOnSave": "workspace",
+  "go.formatTool": "gofmt",
+  "go.testOnSave": true,
+  "go.testFlags": ["-v", "-cover"],
+  "go.coverageDecorator": {
+    "type": "highlight" // I prefer gutters but they break breakpoints.
+  },
+  "go.coverOnSave": true, // Show coverage after saving a test file
+  "go.coverOnSingleTest": true, // Show coverage after running a single test
+  "go.coverageOptions": "showUncoveredCodeOnly", // Display only uncovered code in the editor to make it easier to see what needs to be tested
+  "[go]": {
+    "editor.defaultFormatter": "golang.go"
+  },
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  }
+}
