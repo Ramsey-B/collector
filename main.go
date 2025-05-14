@@ -109,7 +109,14 @@ func main() {
 		// record file opens
 		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat", "-F", "key=" + *key},
 		// record IPv4 connect() calls
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect", "-F", "key=" + *key},
+		{
+			"-a", "exit,always",
+			"-F", "arch=b64",
+			"-S", "connect",
+			"-F", "family=2", // AF_INET only
+			"-F", "success=1", // only successful connects
+			"-F", "key=" + *key,
+		},
 	}
 	exec.Command("auditctl", "-D").Run()
 	for _, r := range rules {
