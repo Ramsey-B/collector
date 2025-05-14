@@ -36,6 +36,7 @@ func must(cmd *exec.Cmd) {
 var client = http.DefaultClient
 
 func sendLogs(endpoint string, batch Batch) error {
+	fmt.Println(batch)
 	enc, err := json.Marshal(batch)
 	if err != nil {
 		log.Fatalf("json.Marshal: %v", err)
