@@ -92,7 +92,7 @@ func parseEvent(line string) Event {
 func main() {
 	interval := flag.Duration("interval", 5*time.Second, "collection window")
 	key := flag.String("key", "collector", "audit key to tag rules with")
-	endpoint := flag.String("endpoint", "http://127.0.0.1:3000/logs", "HTTP endpoint to POST batches to")
+	endpoint := flag.String("endpoint", "http://127.0.0.1:3000/api/v1.0/logs", "HTTP endpoint to POST batches to")
 	flag.Parse()
 
 	if os.Geteuid() != 0 {
@@ -136,7 +136,7 @@ func main() {
 			}
 			events = append(events, parseEvent(line))
 		}
-		
+
 		// wrap into a batch and emit as JSON
 		batch := Batch{Timestamp: time.Now().UTC(), Events: events}
 		if err := sendLogs(*endpoint, batch); err != nil {
