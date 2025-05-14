@@ -1,104 +1,149 @@
 package main
 
 import (
-	"bufio"
-	"context"
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
-// Event holds a timestamped log message
 type Event struct {
-    Timestamp string `json:"timestamp"`
-    Message   string `json:"message"`
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"` // formatted RFC3339Nano
+	Raw       string `json:"raw"`
 }
 
-// startProbe launches cmdName with args and streams each stdout line into out.
-// It stops the subprocess when ctx is cancelled.
-func startProbe(ctx context.Context, out chan<- string, cmdName string, args ...string) error {
-    cmd := exec.CommandContext(ctx, cmdName, args...)
-    stdout, err := cmd.StdoutPipe()
-    if err != nil {
-        return err
-    }
-    cmd.Stderr = cmd.Stdout
-
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-
-    // read lines
-    go func() {
-        defer cmd.Wait()
-        scanner := bufio.NewScanner(stdout)
-        for scanner.Scan() {
-            out <- scanner.Text()
-        }
-        if err := scanner.Err(); err != nil {
-            log.Printf("scanner error for %s: %v", cmdName, err)
-        }
-    }()
-
-    // kill on context cancel
-    go func() {
-        <-ctx.Done()
-        _ = cmd.Process.Signal(syscall.SIGINT)
-    }()
-
-    return nil
+type Batch struct {
+	Timestamp time.Time `json:"timestamp"`
+	Events    []Event   `json:"events"`
 }
+
+func must(cmd *exec.Cmd) {
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Fatalf("command %v failed: %v\n%s", cmd.Args, err, out)
+	}
+}
+
+var client = http.DefaultClient
+
+func sendLogs(endpoint string, batch Batch) error {
+	enc, err := json.Marshal(batch)
+	if err != nil {
+		log.Fatalf("json.Marshal: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(enc))
+	if err != nil {
+		log.Printf("creating request failed: %v", err)
+		return err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("sending request failed: %v", err)
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("request failed: %v", resp.Status)
+		return fmt.Errorf("request failed: %v", resp.Status)
+	}
+
+	return nil
+}
+
+var msgRe = regexp.MustCompile(`msg=audit\((\d+\.\d+):\d+\)`)
+
+func parseEvent(line string) Event {
+	ev := Event{Raw: line}
+
+	// extract type=
+	for _, tok := range strings.Fields(line) {
+		if strings.HasPrefix(tok, "type=") {
+			ev.Type = strings.TrimPrefix(tok, "type=")
+		}
+	}
+
+	// extract and parse the timestamp from msg=audit(...)
+	if m := msgRe.FindStringSubmatch(line); len(m) == 2 {
+		// m[1] is like "1715703605.123456789"
+		if f, err := strconv.ParseFloat(m[1], 64); err == nil {
+			sec := int64(f)
+			nsec := int64((f - float64(sec)) * 1e9)
+			t := time.Unix(sec, nsec).UTC()
+			ev.Timestamp = t.Format(time.RFC3339Nano)
+		}
+	}
+
+	return ev
+}
+
 
 func main() {
-    // catch Ctrl-C
-    sigs := make(chan os.Signal, 1)
-    signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-    ctx, cancel := context.WithCancel(context.Background())
+	interval := flag.Duration("interval", 5*time.Second, "collection window")
+	key := flag.String("key", "collector", "audit key to tag rules with")
+	endpoint := flag.String("endpoint", "http://127.0.0.1:3000/logs", "HTTP endpoint to POST batches to")
+	flag.Parse()
 
-    // single channel for all probes
-    rawCh := make(chan string)
+	if os.Geteuid() != 0 {
+		log.Fatal("must be run as root")
+	}
 
-    // probes: plain names, no -T
-    probes := [][]string{
-        {"execsnoop"},
-        {"tcpconnect"},
-        {"opensnoop"},
-    }
-    for _, p := range probes {
-        cmd, args := p[0], p[1:]
-        if err := startProbe(ctx, rawCh, cmd, args...); err != nil {
-            log.Fatalf("failed to start %s: %v", cmd, err)
-        }
-    }
+	rules := [][]string{
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve", "-F", "key=" + *key},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat", "-F", "key=" + *key},
+		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect", "-F", "key=" + *key},
+	}
 
-    // consumer: read raw lines, timestamp in Go, emit JSON
-    go func() {
-        for line := range rawCh {
-            ev := Event{
-                Timestamp: time.Now().UTC().Format(time.RFC3339),
-                Message:   strings.TrimSpace(line),
-            }
-            b, err := json.Marshal(ev)
-            if err != nil {
-                log.Printf("json marshal error: %v", err)
-                continue
-            }
-            fmt.Println(string(b))
-        }
-    }()
+	for {
+		// clear any old rules
+		must(exec.Command("auditctl", "-D"))
+		// install fresh rules
+		for _, args := range rules {
+			must(exec.Command("auditctl", args...))
+		}
 
-    // wait for interrupt
-    <-sigs
-    log.Println("shutting down probes…")
-    cancel()
-    // give all goroutines a moment to finish
-    time.Sleep(1 * time.Second)
-    close(rawCh)
-    log.Println("done")
+		time.Sleep(*interval)
+
+		// fetch raw lines
+		out, err := exec.Command(
+			"ausearch",
+			"--format", "raw",
+			"-m", "SYSCALL,PATH,SOCKADDR",
+			"-k", *key,
+			"--start", "recent",
+		).CombinedOutput()
+		if err != nil {
+			log.Fatalf("ausearch error: %v\n%s", err, out)
+		}
+
+		// parse each non-empty line into an Event
+		lines := strings.Split(string(out), "\n")
+		events := make([]Event, 0, len(lines))
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			events = append(events, parseEvent(line))
+		}
+		
+		// wrap into a batch and emit as JSON
+		batch := Batch{Timestamp: time.Now().UTC(), Events: events}
+		if err := sendLogs(*endpoint, batch); err != nil {
+			log.Fatalf("sending logs failed: %v", err)
+		}
+
+		// tear down rules for next cycle
+		must(exec.Command("auditctl", "-D"))
+	}
 }

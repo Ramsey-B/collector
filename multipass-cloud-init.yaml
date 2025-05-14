@@ -1,51 +1,13 @@
 #cloud-config
+
 packages:
-  - linux-tools-common
-  - linux-tools-generic
-  - linux-headers-$(uname -r)
-  - clang
-  - llvm
-  - libelf-dev
-  - libbpf-dev
-  - build-essential
-  - iproute2
-  - bcc-tools
-  - python3-bcc
-  - jq
-
+  - sudo # ensure sudo is available
+  - auditd # kernel audit support
 runcmd:
-  - apt-get update
-
-  # Verify BPF toolchain
-  - |
-    echo "=== bpftool version ==="
-    bpftool version || (echo "ERROR: bpftool missing" && exit 1)
-  - |
-    echo "=== clang version ==="
-    clang --version | head -n1
-
-  # Verify BCC wrappers exist
-  - |
-    for tool in execsnoop tcpconnect opensnoop; do
-      if [ ! -x /usr/share/bcc/tools/$tool ]; then
-        echo "ERROR: $tool not found in /usr/share/bcc/tools" && exit 1
-      fi
-    done
-
-  # Install your collector binary
-  - |
-    arch=$(uname -m)
-    if [ "$arch" = "aarch64" ]; then
-      bin=collector-arm64
-    else
-      bin=collector-amd64
-    fi
-    curl -fsSL \
-      -o /usr/local/bin/collector \
-      "https://github.com/Ramsey-B/collector/releases/download/latest/$bin" \
-      && chmod +x /usr/local/bin/collector
-
-  # Launch collector in background (logs to /var/log/collector.log)
+  - arch=$(uname -m)
+  - if [ "$arch" = "aarch64" ]; then bin=collector-arm64; else bin=collector-amd64; fi
+  - curl -fSL -o /usr/local/bin/collector https://github.com/Ramsey-B/collector/releases/download/latest/$bin
+  - chmod +x /usr/local/bin/collector
   - nohup /usr/local/bin/collector -interval 5s > /var/log/collector.log 2>&1 &
-
-final_message: "The collector VM is ready with BCC probes and your collector installed."
+  - sleep 6
+  - head -n 20 /var/log/collector.log
