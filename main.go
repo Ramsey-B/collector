@@ -44,17 +44,13 @@ func sendLogs(endpoint string, batch Batch) error {
 
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(enc))
 	if err != nil {
-		log.Printf("creating request failed: %v", err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
     if err != nil {
-        // ignore EOF on empty response
-        if err == io.EOF {
-            log.Printf("warning: EOF from server, treating as success")
-        } else {
+		if err != io.EOF {
             return fmt.Errorf("sending request: %w", err)
         }
     }
@@ -65,8 +61,8 @@ func sendLogs(endpoint string, batch Batch) error {
 
         // accept any 2xx
         if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-            log.Printf("request failed: %s", resp.Status)
-        }
+            return fmt.Errorf("request failed with status %s", resp.Status)
+        } 
     }
 
 	return nil
@@ -98,6 +94,13 @@ func parseEvent(line string) Event {
 	return ev
 }
 
+func sendLogsAsync(endpoint string, batch Batch) {
+	go func() {
+		if err := sendLogs(endpoint, batch); err != nil {
+			log.Printf("failed to send logs to %s: %v", endpoint, err)
+		}
+	}()
+}
 
 func main() {
 	interval := flag.Duration("interval", 5*time.Second, "collection window")
@@ -147,11 +150,9 @@ func main() {
 			events = append(events, parseEvent(line))
 		}
 
-		// wrap into a batch and emit as JSON
+		// wrap into a batch and send asynchronously
 		batch := Batch{Timestamp: time.Now().UTC(), Logs: events}
-		if err := sendLogs(*endpoint, batch); err != nil {
-			log.Fatalf("sending logs failed: %v", err)
-		}
+		sendLogsAsync(*endpoint, batch)
 
 		// tear down rules for next cycle
 		must(exec.Command("auditctl", "-D"))
