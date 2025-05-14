@@ -1,41 +1,51 @@
+#cloud-config
 packages:
-  - sudo
+  - linux-tools-common
+  - linux-tools-generic
+  - linux-headers-$(uname -r)
+  - clang
+  - llvm
+  - libelf-dev
+  - libbpf-dev
+  - build-essential
+  - iproute2
+  - bcc-tools
+  - python3-bcc
+  - jq
 
 runcmd:
-  # Ensure apt is up-to-date
-  - |
-    apt-get update
+  - apt-get update
 
-  # Install the generic tools package
-  - |
-    apt-get install -y linux-tools-common
-
-  # Install the kernel-specific tools
-  - |
-    apt-get install -y \
-      linux-tools-$(uname -r) \
-      linux-headers-$(uname -r)
-
-  # Install eBPF build dependencies
-  - |
-    apt-get install -y \
-      clang llvm \
-      libelf-dev libbpf-dev \
-      build-essential \
-      iproute2 bpfcc-tools
-
-  # Verify installation
+  # Verify BPF toolchain
   - |
     echo "=== bpftool version ==="
-    bpftool version || echo "bpftool not found"
+    bpftool version || (echo "ERROR: bpftool missing" && exit 1)
+  - |
     echo "=== clang version ==="
     clang --version | head -n1
 
-  # Install collector
-  - arch=$(uname -m)
-  - if [ "$arch" = "aarch64" ]; then bin=collector-arm64; else bin=collector-amd64; fi
-  - curl -fSL -o /usr/local/bin/collector https://github.com/Ramsey-B/collector/releases/download/latest/$bin
-  - chmod +x /usr/local/bin/collector
+  # Verify BCC wrappers exist
+  - |
+    for tool in execsnoop tcpconnect opensnoop; do
+      if [ ! -x /usr/share/bcc/tools/$tool ]; then
+        echo "ERROR: $tool not found in /usr/share/bcc/tools" && exit 1
+      fi
+    done
 
-  # Run collector
+  # Install your collector binary
+  - |
+    arch=$(uname -m)
+    if [ "$arch" = "aarch64" ]; then
+      bin=collector-arm64
+    else
+      bin=collector-amd64
+    fi
+    curl -fsSL \
+      -o /usr/local/bin/collector \
+      "https://github.com/Ramsey-B/collector/releases/download/latest/$bin" \
+      && chmod +x /usr/local/bin/collector
+
+  # Launch collector in background (logs to /var/log/collector.log)
   - nohup /usr/local/bin/collector -interval 5s > /var/log/collector.log 2>&1 &
+
+final_message: "The collector VM is ready with BCC probes and your collector installed."

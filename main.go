@@ -20,6 +20,8 @@ type Event struct {
     Message   string `json:"message"`
 }
 
+// startProbe launches cmdName with args and streams each stdout line into out.
+// It stops the subprocess when ctx is cancelled.
 func startProbe(ctx context.Context, out chan<- string, cmdName string, args ...string) error {
     cmd := exec.CommandContext(ctx, cmdName, args...)
     stdout, err := cmd.StdoutPipe()
@@ -28,12 +30,11 @@ func startProbe(ctx context.Context, out chan<- string, cmdName string, args ...
     }
     cmd.Stderr = cmd.Stdout
 
-	// start the command
     if err := cmd.Start(); err != nil {
         return err
     }
 
-	// read the output of the command
+    // read lines
     go func() {
         defer cmd.Wait()
         scanner := bufio.NewScanner(stdout)
@@ -45,7 +46,7 @@ func startProbe(ctx context.Context, out chan<- string, cmdName string, args ...
         }
     }()
 
-	// listen for the context to be cancelled
+    // kill on context cancel
     go func() {
         <-ctx.Done()
         _ = cmd.Process.Signal(syscall.SIGINT)
@@ -55,31 +56,34 @@ func startProbe(ctx context.Context, out chan<- string, cmdName string, args ...
 }
 
 func main() {
-    // Setup graceful shutdown
+    // catch Ctrl-C
     sigs := make(chan os.Signal, 1)
     signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
     ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
 
-    // Single channel for all probes
+    // single channel for all probes
     rawCh := make(chan string)
 
+    // probes: plain names, no -T
     probes := [][]string{
-        {"sudo", "execsnoop-bpfcc", "-T"},
-        {"sudo", "tcpconnect-bpfcc", "-T"},
-        {"sudo", "opensnoop-bpfcc", "-T"},
+        {"execsnoop"},
+        {"tcpconnect"},
+        {"opensnoop"},
     }
     for _, p := range probes {
         cmd, args := p[0], p[1:]
         if err := startProbe(ctx, rawCh, cmd, args...); err != nil {
-            log.Fatalf("failed to start %s: %v", args[0], err)
+            log.Fatalf("failed to start %s: %v", cmd, err)
         }
     }
 
+    // consumer: read raw lines, timestamp in Go, emit JSON
     go func() {
         for line := range rawCh {
-            ts := time.Now().UTC().Format(time.RFC3339)
-            ev := Event{Timestamp: ts, Message: strings.TrimSpace(line)}
+            ev := Event{
+                Timestamp: time.Now().UTC().Format(time.RFC3339),
+                Message:   strings.TrimSpace(line),
+            }
             b, err := json.Marshal(ev)
             if err != nil {
                 log.Printf("json marshal error: %v", err)
@@ -89,12 +93,12 @@ func main() {
         }
     }()
 
-    // Wait for interrupt
+    // wait for interrupt
     <-sigs
-    log.Println("Shutting down probes…")
+    log.Println("shutting down probes…")
     cancel()
-    // Allow probes to exit
-    time.Sleep(time.Second)
+    // give all goroutines a moment to finish
+    time.Sleep(1 * time.Second)
     close(rawCh)
-    log.Println("Done.")
+    log.Println("done")
 }
