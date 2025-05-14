@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/exp/slices"
 )
 
 type Event struct {
@@ -44,8 +45,10 @@ func postJSON(endpoint string, payload any) error {
     req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(body))
     req.Header.Set("Content-Type", "application/json")
     resp, err := client.Do(req)
-    if err != nil && err != io.EOF {
-        return err
+    if err != nil {
+        if err != io.EOF {
+            return err
+        }
     }
     if resp != nil {
         defer resp.Body.Close()
@@ -86,58 +89,54 @@ func parseLine(line string) (Event, bool) {
 }
 
 func main() {
-    interval := flag.Duration("interval", 5*time.Second, "batch interval")
-    key      := flag.String("key", "collector", "audit key tag (unused in tail mode)")
-    endpoint := flag.String("endpoint", "http://127.0.0.1:3000/api/v1.0/logs", "POST target")
+    flushSize := flag.Int("flush", 2048, "number of events before sending batch")
+    key       := flag.String("key", "collector", "audit key")
+    endpoint  := flag.String("endpoint", "http://127.0.0.1:3000/api/v1.0/logs", "POST target")
     flag.Parse()
 
-    if os.Geteuid() != 0 { log.Fatal("must run as root") }
+    if os.Geteuid() != 0 {
+        log.Fatal("must run as root")
+    }
 
     // install audit rules once
     rules := [][]string{{"-a","exit,always","-F","arch=b64","-S","execve","-F","key="+*key},{"-a","exit,always","-F","arch=b64","-S","openat","-F","key="+*key},{"-a","exit,always","-F","arch=b64","-S","connect","-F","key="+*key}}
-    exec.Command("auditctl","-D").Run()
+    exec.Command("auditctl", "-D").Run()
     for _, r := range rules { exec.Command("auditctl", r...).Run() }
-    log.Println("audit rules installed; tailing /var/log/audit/audit.log")
+    log.Println("audit rules installed; tailing audit.log…")
 
-    // tail -F the audit log
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
-    tailCmd := exec.CommandContext(ctx, "tail", "-F", "/var/log/audit/audit.log")
-    pipe, _ := tailCmd.StdoutPipe()
-    if err := tailCmd.Start(); err != nil { log.Fatalf("tail start: %v", err) }
+    tail := exec.CommandContext(ctx, "tail", "-F", "/var/log/audit/audit.log")
+    pipe, _ := tail.StdoutPipe()
+    if err := tail.Start(); err != nil {
+        log.Fatalf("tail start: %v", err)
+    }
 
-    // shared buffer for lines
     var mu sync.Mutex
-    buffer := make([]Event,0,128)
+    buf := make([]Event, 0, *flushSize)
 
-    go func() {
-        sc := bufio.NewScanner(pipe)
-        for sc.Scan() {
-            if ev, ok := parseLine(sc.Text()); ok {
-                mu.Lock()
-                buffer = append(buffer, ev)
-                mu.Unlock()
-            }
+    flush := func() {
+        if len(buf) == 0 { return }
+        batch := Batch{
+            Timestamp: time.Now().UTC(), 
+            Logs: slices.Clone(buf),
         }
-        if err := sc.Err(); err != nil {
-            log.Printf("tail scanner error: %v", err)
-        }
-    }()
+        buf = buf[:0] // clear the buffer
+        postJSON(*endpoint, batch)
+    }
 
-    ticker := time.NewTicker(*interval)
-    defer ticker.Stop()
-
-    for range ticker.C {
-        mu.Lock()
-        if len(buffer)==0 { mu.Unlock(); continue }
-        batch := Batch{Timestamp: time.Now().UTC(), Logs: append([]Event(nil), buffer...)}
-        buffer = buffer[:0]
-        mu.Unlock()
-
-        go func(b Batch){
-            if err := postJSON(*endpoint, b); err != nil {
-                log.Printf("post error: %v", err)
+    sc := bufio.NewScanner(pipe)
+    for sc.Scan() {
+        if ev, ok := parseLine(sc.Text()); ok {
+            mu.Lock()
+            buf = append(buf, ev)
+            if len(buf) >= *flushSize {
+                flush()
             }
-        }(batch)
+            mu.Unlock()
+        }
+    }
+    if err := sc.Err(); err != nil {
+        log.Printf("scanner error: %v", err)
     }
 }
