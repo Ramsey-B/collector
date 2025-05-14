@@ -9,31 +9,28 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 type Event struct {
-	Timestamp time.Time
-	Message   string
+	Timestamp string `json:"timestamp"`
+	Message   string    `json:"message"`
 }
 
-func startProbe(ctx context.Context, cmdName string, args ...string) (<-chan Event, error) {
+func startProbe(ctx context.Context, eventsChan chan<- Event, cmdName string, args ...string) error {
     cmd := exec.CommandContext(ctx, cmdName, args...)
     stdout, err := cmd.StdoutPipe()
     if err != nil {
-        return nil, err
+        return err
     }
     cmd.Stderr = cmd.Stdout // merge stderr so we don't lose failures
 
     if err := cmd.Start(); err != nil {
-        return nil, err
+        return err
     }
 
-    events := make(chan Event)
     go func() {
-        defer close(events)
+        defer close(eventsChan)
         scanner := bufio.NewScanner(stdout)
         for scanner.Scan() {
             line := scanner.Text()
@@ -44,11 +41,11 @@ func startProbe(ctx context.Context, cmdName string, args ...string) (<-chan Eve
 			ts := parts[0]
             message := strings.Join(parts[1:], " ")
             
-            tsInt, _ := strconv.ParseInt(ts, 10, 64)
-            timestamp := time.Unix(0, tsInt)
+            // tsInt, _ := strconv.ParseInt(ts, 10, 64)
+            // timestamp := time.Unix(0, tsInt)
             
-            events <- Event{
-				Timestamp: timestamp,
+            eventsChan <- Event{
+				Timestamp: ts,
 				Message: message,
 			}
         }
@@ -64,7 +61,7 @@ func startProbe(ctx context.Context, cmdName string, args ...string) (<-chan Eve
         cmd.Wait()
     }()
 
-    return events, nil
+    return nil
 }
 
 func main() {
@@ -75,30 +72,21 @@ func main() {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
+	allEvents := make(chan Event) // <- channel to collect all events
+
     // start the three probes
-    execs, err := startProbe(ctx, "sudo", "execsnoop-bpfcc", "-T")
+    err := startProbe(ctx, allEvents, "sudo", "execsnoop-bpfcc", "-T")
     if err != nil {
         log.Fatalf("execsnoop: %v", err)
     }
-    conns, err := startProbe(ctx, "sudo", "tcpconnect-bpfcc", "-T")
+    err = startProbe(ctx, allEvents, "sudo", "tcpconnect-bpfcc", "-T")
     if err != nil {
         log.Fatalf("tcpconnect: %v", err)
     }
-    opens, err := startProbe(ctx, "sudo", "opensnoop-bpfcc", "-T")
+    err = startProbe(ctx, allEvents, "sudo", "opensnoop-bpfcc", "-T")
     if err != nil {
         log.Fatalf("opensnoop: %v", err)
     }
-
-    // fan-in channel
-    allEvents := make(chan Event)
-    fanIn := func(src <-chan Event) {
-        for ev := range src {
-            allEvents <- ev
-        }
-    }
-    go fanIn(execs)
-    go fanIn(conns)
-    go fanIn(opens)
 
     go func() {
         for ev := range allEvents {
