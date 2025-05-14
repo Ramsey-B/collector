@@ -71,6 +71,12 @@ func parseLine(line string) (Event, bool) {
             ev.Timestamp = time.Unix(sec, nsec).UTC().Format(time.RFC3339Nano)
         }
     }
+
+	// todo: figure out why some logs don't have a timestamp
+	if ev.Timestamp == "" {
+        ev.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+    }
+
     return ev, true
 }
 
