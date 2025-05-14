@@ -24,7 +24,7 @@ type Event struct {
 
 type Batch struct {
 	Timestamp time.Time `json:"timestamp"`
-	Events    []Event   `json:"events"`
+	Logs    []Event   `json:"logs"`
 }
 
 func must(cmd *exec.Cmd) {
@@ -65,7 +65,7 @@ func sendLogs(endpoint string, batch Batch) error {
 
         // accept any 2xx
         if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-            return fmt.Errorf("request failed: %s", resp.Status)
+            log.Printf("request failed: %s", resp.Status)
         }
     }
 
@@ -148,7 +148,7 @@ func main() {
 		}
 
 		// wrap into a batch and emit as JSON
-		batch := Batch{Timestamp: time.Now().UTC(), Events: events}
+		batch := Batch{Timestamp: time.Now().UTC(), Logs: events}
 		if err := sendLogs(*endpoint, batch); err != nil {
 			log.Fatalf("sending logs failed: %v", err)
 		}
