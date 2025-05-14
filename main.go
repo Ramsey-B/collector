@@ -11,94 +11,90 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 )
+
+// Event holds a timestamped log message
 type Event struct {
-	Timestamp string `json:"timestamp"`
-	Message   string    `json:"message"`
+    Timestamp string `json:"timestamp"`
+    Message   string `json:"message"`
 }
 
-func startProbe(ctx context.Context, eventsChan chan<- Event, cmdName string, args ...string) error {
+func startProbe(ctx context.Context, out chan<- string, cmdName string, args ...string) error {
     cmd := exec.CommandContext(ctx, cmdName, args...)
     stdout, err := cmd.StdoutPipe()
     if err != nil {
         return err
     }
-    cmd.Stderr = cmd.Stdout // merge stderr so we don't lose failures
+    cmd.Stderr = cmd.Stdout
 
+	// start the command
     if err := cmd.Start(); err != nil {
         return err
     }
 
+	// read the output of the command
     go func() {
-        defer close(eventsChan)
+        defer cmd.Wait()
         scanner := bufio.NewScanner(stdout)
         for scanner.Scan() {
-            line := scanner.Text()
-			parts := strings.Fields(line)
-            if len(parts) < 2 {
-                continue
-            }
-			ts := parts[0]
-            message := strings.Join(parts[1:], " ")
-            
-            // tsInt, _ := strconv.ParseInt(ts, 10, 64)
-            // timestamp := time.Unix(0, tsInt)
-            
-            eventsChan <- Event{
-				Timestamp: ts,
-				Message: message,
-			}
+            out <- scanner.Text()
         }
         if err := scanner.Err(); err != nil {
-            log.Printf("scanner error: %v", err)
+            log.Printf("scanner error for %s: %v", cmdName, err)
         }
     }()
 
-    // when context cancels, kill the process
+	// listen for the context to be cancelled
     go func() {
         <-ctx.Done()
         _ = cmd.Process.Signal(syscall.SIGINT)
-        cmd.Wait()
     }()
 
     return nil
 }
 
 func main() {
+    // Setup graceful shutdown
     sigs := make(chan os.Signal, 1)
     signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-    // use a cancellable context so we can stop all probes at once
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
-	allEvents := make(chan Event) // <- channel to collect all events
+    // Single channel for all probes
+    rawCh := make(chan string)
 
-    // start the three probes
-    err := startProbe(ctx, allEvents, "sudo", "execsnoop-bpfcc", "-T")
-    if err != nil {
-        log.Fatalf("execsnoop: %v", err)
+    probes := [][]string{
+        {"sudo", "execsnoop"},
+        {"sudo", "tcpconnect"},
+        {"sudo", "opensnoop"},
     }
-    err = startProbe(ctx, allEvents, "sudo", "tcpconnect-bpfcc", "-T")
-    if err != nil {
-        log.Fatalf("tcpconnect: %v", err)
-    }
-    err = startProbe(ctx, allEvents, "sudo", "opensnoop-bpfcc", "-T")
-    if err != nil {
-        log.Fatalf("opensnoop: %v", err)
+    for _, p := range probes {
+        cmd, args := p[0], p[1:]
+        if err := startProbe(ctx, rawCh, cmd, args...); err != nil {
+            log.Fatalf("failed to start %s: %v", args[0], err)
+        }
     }
 
     go func() {
-        for ev := range allEvents {
-            // TODO: preprocess (flatten fields, timestamp → ISO8601)
-            // TODO: send to vector store / RAG pipeline
-            b, _ := json.Marshal(ev)
+        for line := range rawCh {
+            ts := time.Now().UTC().Format(time.RFC3339)
+            ev := Event{Timestamp: ts, Message: strings.TrimSpace(line)}
+            b, err := json.Marshal(ev)
+            if err != nil {
+                log.Printf("json marshal error: %v", err)
+                continue
+            }
             fmt.Println(string(b))
         }
     }()
 
-    // wait for Ctrl-C or duration timeout
+    // Wait for interrupt
     <-sigs
-    log.Println("shutting down probes…")
+    log.Println("Shutting down probes…")
     cancel()
+    // Allow probes to exit
+    time.Sleep(time.Second)
+    close(rawCh)
+    log.Println("Done.")
 }
