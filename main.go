@@ -19,7 +19,7 @@ import (
 type Event struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"` // formatted RFC3339Nano
-	Raw       string `json:"raw"`
+	Message       string `json:"message"`
 }
 
 type Batch struct {
@@ -75,7 +75,7 @@ func sendLogs(endpoint string, batch Batch) error {
 var msgRe = regexp.MustCompile(`msg=audit\((\d+\.\d+):\d+\)`)
 
 func parseEvent(line string) Event {
-	ev := Event{Raw: line}
+	ev := Event{Message: line}
 
 	// extract type=
 	for _, tok := range strings.Fields(line) {
