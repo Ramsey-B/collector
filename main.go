@@ -77,9 +77,7 @@ func main() {
 		out, err := exec.Command(
 			"ausearch",
 			"--format", "raw",
-			"--type", "SYSCALL",
-			"--type", "PATH",
-			"--type", "SOCKADDR",
+			"-m", "SYSCALL,PATH,SOCKADDR",
 			"--start", "recent",
 		).CombinedOutput()
 		if err != nil {
