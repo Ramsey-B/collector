@@ -18,8 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"slices"
+
 	"github.com/google/uuid"
-	"golang.org/x/exp/slices"
 )
 
 type Event struct {
