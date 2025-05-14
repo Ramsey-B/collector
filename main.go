@@ -1,7 +1,3 @@
-// poll_events_parsed.go
-//go:build linux
-// +build linux
-
 package main
 
 import (
@@ -81,9 +77,9 @@ func main() {
 		out, err := exec.Command(
 			"ausearch",
 			"--format", "raw",
-			"--message", "EXECVE",
-			"--message", "PATH",
-			"--message", "CONNECT",
+			"--type", "SYSCALL",
+			"--type", "PATH",
+			"--type", "SOCKADDR",
 			"--start", "recent",
 		).CombinedOutput()
 		if err != nil {
