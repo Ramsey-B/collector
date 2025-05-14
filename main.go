@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,17 +49,24 @@ func sendLogs(endpoint string, batch Batch) error {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("sending request failed: %v", err)
-		return err
-	}
+    if err != nil {
+        // ignore EOF on empty response
+        if err == io.EOF {
+            log.Printf("warning: EOF from server, treating as success")
+        } else {
+            return fmt.Errorf("sending request: %w", err)
+        }
+    }
+    if resp != nil {
+        defer resp.Body.Close()
+        // read and discard body so connection can be reused
+        io.Copy(io.Discard, resp.Body)
 
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("request failed: %v", resp.Status)
-		return fmt.Errorf("request failed: %v", resp.Status)
-	}
+        // accept any 2xx
+        if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+            return fmt.Errorf("request failed: %s", resp.Status)
+        }
+    }
 
 	return nil
 }
