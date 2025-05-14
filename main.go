@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,162 +15,118 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Event struct {
-	Type      string `json:"type"`
-	Timestamp string `json:"timestamp"` // formatted RFC3339Nano
-	Message       string `json:"message"`
+    Type      string `json:"type"`
+    Timestamp string `json:"timestamp"`
+    Message   string `json:"message"`
 }
 
 type Batch struct {
-	Timestamp time.Time `json:"timestamp"`
-	Logs    []Event   `json:"logs"`
-}
-
-func must(cmd *exec.Cmd) {
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Fatalf("command %v failed: %v\n%s", cmd.Args, err, out)
-	}
+    Timestamp time.Time `json:"timestamp"`
+    Logs      []Event   `json:"logs"`
 }
 
 var client = http.DefaultClient
 
-func sendLogs(endpoint string, batch Batch) error {
-	log.Printf("sending %d logs to %s", len(batch.Logs), endpoint)
-	enc, err := json.Marshal(batch)
-	if err != nil {
-		log.Fatalf("json.Marshal: %v", err)
-	}
-
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(enc))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
+func postJSON(endpoint string, payload any) error {
+    body, err := json.Marshal(payload)
     if err != nil {
-		if err != io.EOF {
-            return fmt.Errorf("sending request: %w", err)
-        }
+        return err
+    }
+    req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    resp, err := client.Do(req)
+    if err != nil && err != io.EOF {
+        return err
     }
     if resp != nil {
         defer resp.Body.Close()
-        // read and discard body so connection can be reused
         io.Copy(io.Discard, resp.Body)
-
-        // accept any 2xx
         if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-            return fmt.Errorf("request failed with status %s", resp.Status)
-        } 
+            return fmt.Errorf("bad status %s", resp.Status)
+        }
     }
-
-	return nil
+    return nil
 }
 
-var msgRe = regexp.MustCompile(`msg=audit\((\d+\.\d+):\d+\)`)
+var msgRe = regexp.MustCompile(`msg=audit\\((\\d+\\.\\d+):\\d+\\)`)
 
-func parseEvent(line string) Event {
-	ev := Event{Message: line}
-
-	// extract type=
-	for _, tok := range strings.Fields(line) {
-		if strings.HasPrefix(tok, "type=") {
-			ev.Type = strings.TrimPrefix(tok, "type=")
-		}
-	}
-
-	// extract and parse the timestamp from msg=audit(...)
-	if m := msgRe.FindStringSubmatch(line); len(m) == 2 {
-		// m[1] is like "1715703605.123456789"
-		if f, err := strconv.ParseFloat(m[1], 64); err == nil {
-			sec := int64(f)
-			nsec := int64((f - float64(sec)) * 1e9)
-			t := time.Unix(sec, nsec).UTC()
-			ev.Timestamp = t.Format(time.RFC3339Nano)
-		}
-	}
-
-	return ev
-}
-
-func sendLogsAsync(endpoint string, batch Batch) {
-	go func() {
-		if err := sendLogs(endpoint, batch); err != nil {
-			log.Printf("failed to send logs to %s: %v", endpoint, err)
-		}
-	}()
+func parseLine(line string) (Event, bool) {
+    if line == "" { return Event{}, false }
+    ev := Event{Message: line}
+    for _, tok := range strings.Fields(line) {
+        if strings.HasPrefix(tok, "type=") {
+            ev.Type = strings.TrimPrefix(tok, "type=")
+            break
+        }
+    }
+    if m := msgRe.FindStringSubmatch(line); len(m) == 2 {
+        if f, err := strconv.ParseFloat(m[1], 64); err == nil {
+            sec := int64(f)
+            nsec := int64((f - float64(sec)) * 1e9)
+            ev.Timestamp = time.Unix(sec, nsec).UTC().Format(time.RFC3339Nano)
+        }
+    }
+    return ev, true
 }
 
 func main() {
-	interval := flag.Duration("interval", 5*time.Second, "collection window")
-	key := flag.String("key", "collector", "audit key to tag rules with")
-	endpoint := flag.String("endpoint", "http://127.0.0.1:3000/api/v1.0/logs", "HTTP endpoint to POST batches to")
-	flag.Parse()
+    interval := flag.Duration("interval", 5*time.Second, "batch interval")
+    key      := flag.String("key", "collector", "audit key tag (unused in tail mode)")
+    endpoint := flag.String("endpoint", "http://127.0.0.1:3000/api/v1.0/logs", "POST target")
+    flag.Parse()
 
-	if os.Geteuid() != 0 {
-		log.Fatal("must be run as root")
-	}
+    if os.Geteuid() != 0 { log.Fatal("must run as root") }
 
-	rules := [][]string{
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve", "-F", "key=" + *key},
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat", "-F", "key=" + *key},
-		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect", "-F", "key=" + *key},
-	}
+    // install audit rules once
+    rules := [][]string{{"-a","exit,always","-F","arch=b64","-S","execve","-F","key="+*key},{"-a","exit,always","-F","arch=b64","-S","openat","-F","key="+*key},{"-a","exit,always","-F","arch=b64","-S","connect","-F","key="+*key}}
+    exec.Command("auditctl","-D").Run()
+    for _, r := range rules { exec.Command("auditctl", r...).Run() }
+    log.Println("audit rules installed; tailing /var/log/audit/audit.log")
 
-	lastTs := time.Now().UTC()
+    // tail -F the audit log
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+    tailCmd := exec.CommandContext(ctx, "tail", "-F", "/var/log/audit/audit.log")
+    pipe, _ := tailCmd.StdoutPipe()
+    if err := tailCmd.Start(); err != nil { log.Fatalf("tail start: %v", err) }
 
-	for {
-		// clear any old rules
-		must(exec.Command("auditctl", "-D"))
-		// install fresh rules
-		for _, args := range rules {
-			must(exec.Command("auditctl", args...))
-		}
+    // shared buffer for lines
+    var mu sync.Mutex
+    buffer := make([]Event,0,128)
 
-		time.Sleep(*interval)
+    go func() {
+        sc := bufio.NewScanner(pipe)
+        for sc.Scan() {
+            if ev, ok := parseLine(sc.Text()); ok {
+                mu.Lock()
+                buffer = append(buffer, ev)
+                mu.Unlock()
+            }
+        }
+        if err := sc.Err(); err != nil {
+            log.Printf("tail scanner error: %v", err)
+        }
+    }()
 
-		// fetch raw lines
-		epoch := fmt.Sprintf("@%d", lastTs.Unix())
-		out, err := exec.Command(
-			"ausearch",
-			"--format", "raw",
-			"-m", "SYSCALL,PATH,SOCKADDR",
-			"-k", *key,
-			"--start", epoch,
-		).CombinedOutput()
-		if err != nil {
-			log.Fatalf("ausearch error: %v\n%s", err, out)
-		}
+    ticker := time.NewTicker(*interval)
+    defer ticker.Stop()
 
-		// parse each non-empty line into an Event
-		lines := strings.Split(string(out), "\n")
-		events := make([]Event, 0, len(lines))
-		for _, line := range lines {
-			if line == "" {
-				continue
-			}
-			events = append(events, parseEvent(line))
-		}
+    for range ticker.C {
+        mu.Lock()
+        if len(buffer)==0 { mu.Unlock(); continue }
+        batch := Batch{Timestamp: time.Now().UTC(), Logs: append([]Event(nil), buffer...)}
+        buffer = buffer[:0]
+        mu.Unlock()
 
-		if len(events) == 0 {
-			lastTs = time.Now().UTC()
-			continue
-		}
-
-		// wrap into a batch and send asynchronously
-		batch := Batch{Timestamp: time.Now().UTC(), Logs: events}
-		sendLogsAsync(*endpoint, batch)
-
-		if t, err := time.Parse(time.RFC3339Nano, events[len(events)-1].Timestamp); err == nil {
-			lastTs = t.Add(time.Nanosecond) // start *after* the last one next time
-		} else {
-			lastTs = time.Now().UTC()
-		}
-
-		// tear down rules for next cycle
-		must(exec.Command("auditctl", "-D"))
-	}
+        go func(b Batch){
+            if err := postJSON(*endpoint, b); err != nil {
+                log.Printf("post error: %v", err)
+            }
+        }(batch)
+    }
 }

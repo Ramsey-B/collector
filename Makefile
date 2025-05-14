@@ -33,3 +33,7 @@ passwd:
 .PHONY: google
 google:
 	multipass exec collector-vm -- bash -c 'nc -zv 8.8.8.8 53 || true'
+
+.PHONY: shell
+shell:
+	multipass exec collector-vm -- bash
