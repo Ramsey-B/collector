@@ -45,6 +45,7 @@ func sendLogs(endpoint string, batch Batch) error {
 		log.Printf("creating request failed: %v", err)
 		return err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
