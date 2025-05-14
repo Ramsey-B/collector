@@ -131,13 +131,13 @@ func main() {
 		time.Sleep(*interval)
 
 		// fetch raw lines
-		startArg := lastTs.Format("2006-01-02 15:04:05")
+		epoch := fmt.Sprintf("@%d", lastTs.Unix())
 		out, err := exec.Command(
 			"ausearch",
 			"--format", "raw",
 			"-m", "SYSCALL,PATH,SOCKADDR",
 			"-k", *key,
-			"--start", startArg,
+			"--start", epoch,
 		).CombinedOutput()
 		if err != nil {
 			log.Fatalf("ausearch error: %v\n%s", err, out)
