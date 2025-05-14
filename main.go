@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Event struct {
@@ -33,7 +35,8 @@ type Batch struct {
 var client = http.DefaultClient
 
 func postJSON(endpoint string, payload any) error {
-	log.Printf("sending %d logs to %s", len(payload.(Batch).Logs), endpoint)
+	reqID := uuid.New().String()
+	log.Printf("sending %d logs to %s (reqID: %s)", len(payload.(Batch).Logs), endpoint, reqID)
     body, err := json.Marshal(payload)
     if err != nil {
         return err
@@ -47,7 +50,7 @@ func postJSON(endpoint string, payload any) error {
     if resp != nil {
         defer resp.Body.Close()
         io.Copy(io.Discard, resp.Body)
-		log.Printf("logs sent with status: %s", resp.Status)
+		log.Printf("logs sent with status: %s (reqID: %s)", resp.Status, reqID)
         if resp.StatusCode < 200 || resp.StatusCode >= 300 {
             return fmt.Errorf("bad status %s", resp.Status)
         }
