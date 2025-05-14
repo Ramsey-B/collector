@@ -1,3 +1,7 @@
+// poll_events_parsed.go
+//go:build linux
+// +build linux
+
 package main
 
 import (
@@ -7,8 +11,21 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
+
+type Event struct {
+	// RawType is the value of the `type=` field (e.g. "SYSCALL" or "PATH")
+	RawType string            `json:"type"`
+	// Fields contains all the key→value pairs from the record
+	Fields  map[string]string `json:"fields"`
+}
+
+type Batch struct {
+	Timestamp time.Time `json:"timestamp"`
+	Events    []Event   `json:"events"`
+}
 
 func must(cmd *exec.Cmd) {
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -16,63 +33,83 @@ func must(cmd *exec.Cmd) {
 	}
 }
 
-type Batch struct {
-	Timestamp time.Time       `json:"timestamp"`
-	Events    json.RawMessage `json:"events"` // raw JSON array from ausearch
+// parseRecord turns a raw audit line like:
+//   type=SYSCALL msg=audit(…): … syscall=59 exe="/usr/bin/ls" pid=1234 …
+// into an Event{RawType:"SYSCALL", Fields: map[…]…}
+func parseRecord(line string) Event {
+	evt := Event{Fields: make(map[string]string)}
+	parts := strings.Fields(line)
+	for _, tok := range parts {
+		if kv := strings.SplitN(tok, "=", 2); len(kv) == 2 {
+			key, val := kv[0], kv[1]
+			// strip surrounding quotes if present
+			val = strings.Trim(val, `"`)
+			evt.Fields[key] = val
+			if key == "type" {
+				evt.RawType = val
+			}
+		}
+	}
+	return evt
 }
 
 func main() {
-	if os.Geteuid() != 0 {
-		log.Fatalf("this program must be run as root")
-	}
-
-	interval := flag.Duration("interval", 5*time.Second, "duration to collect events before fetching")
+	interval := flag.Duration("interval", 5*time.Second, "collection window")
 	flag.Parse()
 
-	rulesArgs := [][]string{
+	if os.Geteuid() != 0 {
+		log.Fatal("must be run as root")
+	}
+
+	rules := [][]string{
 		{"-a", "exit,always", "-F", "arch=b64", "-S", "execve"},
 		{"-a", "exit,always", "-F", "arch=b64", "-S", "openat"},
 		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect"},
 	}
 
 	for {
-		// clear out any old rules
+		// clear any old rules
 		must(exec.Command("auditctl", "-D"))
-
-		// install our short-lived rules
-		for _, args := range rulesArgs {
+		// install fresh rules
+		for _, args := range rules {
 			must(exec.Command("auditctl", args...))
 		}
 
-		// collect for the interval
 		time.Sleep(*interval)
 
-		// fetch JSON events from that window
-		cmd := exec.Command(
+		// fetch raw lines
+		out, err := exec.Command(
 			"ausearch",
-			"--format", "json",      // JSON output
-			"--message", "EXECVE",   // execve records
-			"--message", "PATH",     // openat records
-			"--message", "CONNECT",  // connect records
-			"--start", "recent",     // only new ones
-		)
-		out, err := cmd.CombinedOutput()
+			"--format", "raw",
+			"--message", "EXECVE",
+			"--message", "PATH",
+			"--message", "CONNECT",
+			"--start", "recent",
+		).CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ausearch error: %v\n%s", err, out)
-		} else {
-			// wrap in a timestamped batch
-			batch := Batch{
-				Timestamp: time.Now().UTC(),
-				Events:    json.RawMessage(out),
-			}
-			enc, err := json.Marshal(batch)
-			if err != nil {
-				log.Fatalf("json marshal batch: %v", err)
-			}
-			fmt.Println(string(enc))
 		}
 
-		// remove rules before next interval
+		// parse each non-empty line into an Event
+		lines := strings.Split(string(out), "\n")
+		var evts []Event
+		for _, ln := range lines {
+			ln = strings.TrimSpace(ln)
+			if ln == "" {
+				continue
+			}
+			evts = append(evts, parseRecord(ln))
+		}
+
+		// wrap into a batch and emit as JSON
+		batch := Batch{Timestamp: time.Now().UTC(), Events: evts}
+		enc, err := json.Marshal(batch)
+		if err != nil {
+			log.Fatalf("json.Marshal: %v", err)
+		}
+		fmt.Println(string(enc))
+
+		// tear down rules for next cycle
 		must(exec.Command("auditctl", "-D"))
 	}
 }
