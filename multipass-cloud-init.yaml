@@ -4,10 +4,10 @@ packages:
   - sudo # ensure sudo is available
   - auditd # kernel audit support
 runcmd:
-  - curl -L -o /usr/local/bin/collector https://github.com/Ramsey-B/collector/releases/download/latest/collector
-
+  - arch=$(uname -m)
+  - if [ "$arch" = "aarch64" ]; then bin=collector-arm64; else bin=collector-amd64; fi
+  - curl -fSL -o /usr/local/bin/collector https://github.com/Ramsey-B/collector/releases/download/latest/$bin
   - chmod +x /usr/local/bin/collector
-
-  # Run it as a simple background service
-  - nohup sudo /usr/local/bin/collector -interval 5s \
-    > /var/log/collector.log 2>&1 &
+  - nohup /usr/local/bin/collector -interval 5s > /var/log/collector.log 2>&1 &
+  - sleep 6
+  - head -n 20 /var/log/collector.log
