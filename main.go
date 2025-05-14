@@ -118,6 +118,8 @@ func main() {
 		{"-a", "exit,always", "-F", "arch=b64", "-S", "connect", "-F", "key=" + *key},
 	}
 
+	lastTs := time.Now().UTC()
+
 	for {
 		// clear any old rules
 		must(exec.Command("auditctl", "-D"))
@@ -129,12 +131,13 @@ func main() {
 		time.Sleep(*interval)
 
 		// fetch raw lines
+		startArg := lastTs.Format("2006-01-02 15:04:05")
 		out, err := exec.Command(
 			"ausearch",
 			"--format", "raw",
 			"-m", "SYSCALL,PATH,SOCKADDR",
 			"-k", *key,
-			"--start", "recent",
+			"--start", startArg,
 		).CombinedOutput()
 		if err != nil {
 			log.Fatalf("ausearch error: %v\n%s", err, out)
@@ -150,9 +153,20 @@ func main() {
 			events = append(events, parseEvent(line))
 		}
 
+		if len(events) == 0 {
+			lastTs = time.Now().UTC()
+			continue
+		}
+
 		// wrap into a batch and send asynchronously
 		batch := Batch{Timestamp: time.Now().UTC(), Logs: events}
 		sendLogsAsync(*endpoint, batch)
+
+		if t, err := time.Parse(time.RFC3339Nano, events[len(events)-1].Timestamp); err == nil {
+			lastTs = t.Add(time.Nanosecond) // start *after* the last one next time
+		} else {
+			lastTs = time.Now().UTC()
+		}
 
 		// tear down rules for next cycle
 		must(exec.Command("auditctl", "-D"))

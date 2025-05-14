@@ -24,7 +24,7 @@ reset:
 
 .PHONY: tail
 tail:
-	multipass exec collector-vm -- sudo tail -n 1 /var/log/collector.log
+	multipass exec collector-vm -- sudo tail -n 100 /var/log/collector.log
 
 .PHONY: passwd
 passwd:
