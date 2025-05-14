@@ -5,17 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
-
-// Event is a generic map for the JSON output
-type Event map[string]interface{}
+type Event struct {
+	Timestamp time.Time
+	Message   string
+}
 
 func startProbe(ctx context.Context, cmdName string, args ...string) (<-chan Event, error) {
     cmd := exec.CommandContext(ctx, cmdName, args...)
@@ -34,15 +36,23 @@ func startProbe(ctx context.Context, cmdName string, args ...string) (<-chan Eve
         defer close(events)
         scanner := bufio.NewScanner(stdout)
         for scanner.Scan() {
-            line := scanner.Bytes()
-            var ev Event
-            if err := json.Unmarshal(line, &ev); err != nil {
-                log.Printf("failed to parse JSON: %v (line: %s)", err, line)
+            line := scanner.Text()
+			parts := strings.Fields(line)
+            if len(parts) < 2 {
                 continue
             }
-            events <- ev
+			ts := parts[0]
+            message := strings.Join(parts[1:], " ")
+            
+            tsInt, _ := strconv.ParseInt(ts, 10, 64)
+            timestamp := time.Unix(0, tsInt)
+            
+            events <- Event{
+				Timestamp: timestamp,
+				Message: message,
+			}
         }
-        if err := scanner.Err(); err != nil && err != io.EOF {
+        if err := scanner.Err(); err != nil {
             log.Printf("scanner error: %v", err)
         }
     }()
@@ -58,7 +68,6 @@ func startProbe(ctx context.Context, cmdName string, args ...string) (<-chan Eve
 }
 
 func main() {
-    // catch Ctrl-C
     sigs := make(chan os.Signal, 1)
     signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
@@ -67,15 +76,15 @@ func main() {
     defer cancel()
 
     // start the three probes
-    execs, err := startProbe(ctx, "sudo", "execsnoop-bpfcc", "-jT")
+    execs, err := startProbe(ctx, "sudo", "execsnoop-bpfcc", "-T")
     if err != nil {
         log.Fatalf("execsnoop: %v", err)
     }
-    conns, err := startProbe(ctx, "sudo", "tcpconnect-bpfcc", "-jT")
+    conns, err := startProbe(ctx, "sudo", "tcpconnect-bpfcc", "-T")
     if err != nil {
         log.Fatalf("tcpconnect: %v", err)
     }
-    opens, err := startProbe(ctx, "sudo", "opensnoop-bpfcc", "-jT")
+    opens, err := startProbe(ctx, "sudo", "opensnoop-bpfcc", "-T")
     if err != nil {
         log.Fatalf("opensnoop: %v", err)
     }
@@ -91,13 +100,6 @@ func main() {
     go fanIn(conns)
     go fanIn(opens)
 
-    // optional: stop after a fixed duration
-    go func() {
-        time.Sleep(30 * time.Second)
-        cancel()
-    }()
-
-    // main loop: process incoming events
     go func() {
         for ev := range allEvents {
             // TODO: preprocess (flatten fields, timestamp → ISO8601)
@@ -111,7 +113,4 @@ func main() {
     <-sigs
     log.Println("shutting down probes…")
     cancel()
-    // give probes a moment to exit
-    time.Sleep(1 * time.Second)
-    log.Println("bye")
 }

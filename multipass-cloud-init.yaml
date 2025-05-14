@@ -22,7 +22,7 @@ runcmd:
       clang llvm \
       libelf-dev libbpf-dev \
       build-essential \
-      iproute2
+      iproute2 bpfcc-tools
 
   # Verify installation
   - |
