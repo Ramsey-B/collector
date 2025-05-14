@@ -65,9 +65,9 @@ func main() {
     rawCh := make(chan string)
 
     probes := [][]string{
-        {"sudo", "execsnoop"},
-        {"sudo", "tcpconnect"},
-        {"sudo", "opensnoop"},
+        {"sudo", "execsnoop-bpfcc", "-T"},
+        {"sudo", "tcpconnect-bpfcc", "-T"},
+        {"sudo", "opensnoop-bpfcc", "-T"},
     }
     for _, p := range probes {
         cmd, args := p[0], p[1:]
